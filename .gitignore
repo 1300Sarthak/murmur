@@ -1,0 +1,6 @@
+.build/
+build/
+CC-Session-Logs/
+.DS_Store
+*.wav
+*.bin

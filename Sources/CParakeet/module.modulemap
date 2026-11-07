@@ -1,0 +1,8 @@
+module CParakeet [system] {
+    header "shim.h"
+    link "parakeet"
+    link "whisper"
+    link "ggml"
+    link "ggml-base"
+    export *
+}

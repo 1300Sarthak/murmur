@@ -1,0 +1,14 @@
+# Murmur macro pad map (CH57x 1189:8890, 3 keys + 1 knob)
+# Upload: ch57x-keyboard-tool upload < murmur-pad.yaml
+model: ch57x-2
+orientation: normal
+rows: 1
+columns: 3
+knobs: 1
+layers:
+  - buttons:
+      - ["f18", "f19", "play"]   # 1 = dictate, 2 = Ask AI, 3 = play/pause
+    knobs:
+      - ccw: "volumedown"
+        press: "mute"
+        cw: "volumeup"
