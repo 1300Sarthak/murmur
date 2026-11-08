@@ -2,14 +2,14 @@
 
 <h1 align="center">Murmur</h1>
 
-**TL;DR: Wispr-Flow-style voice dictation for macOS that runs 100% on your Mac. Tap a key, talk, and clean text appears at your cursor about a second after you stop. Speech-to-text is NVIDIA Parakeet (via whisper.cpp, on the GPU), cleanup and "Ask AI" use a local model through Ollama, and a third mode turns what you say into a Claude Code session. No cloud, no account, no telemetry.**
+**TL;DR: Wispr-Flow-style voice dictation for macOS that runs 100% on your Mac. Tap a key, talk, and clean text appears at your cursor about a second after you stop. Speech-to-text is NVIDIA Parakeet (via whisper.cpp, on the GPU) and cleanup uses a local model through Ollama. "Ask AI" answers by voice with rich cards, and can read live data from your own self-hosted services (finance dashboard, Immich, Seerr, Beszel) over your private network. A third mode turns what you say into a Claude Code session. No account, no telemetry; private data stays on the local model.**
 
 ## What it does
 
 | Mode | Shortcut | What happens |
 |---|---|---|
-| **Dictate** | `⌃⌥Space` (or macro pad key 1 = F18) | Transcribes, removes "um/uh", applies "actually no, make it 4" corrections, pastes into the focused app |
-| **Ask AI** | `⌃⌥/` (or pad key 2 = F19) | Speak a question; a floating panel streams the answer. Press again for a follow-up. Copy or Insert |
+| **Dictate** | `⌥Space` or `⌃⌥Space` (or macro pad key 1 = F18) | Transcribes, removes "um/uh", applies "actually no, make it 4" corrections, pastes into the focused app |
+| **Ask AI** | `⌥/` or `⌃⌥/` (or pad key 2 = F19) | Speak a question; a floating panel streams the answer with cards (weather, money, photos, media, server). Press again for a follow-up. Copy or Insert |
 | **Claude Code** | `⌃⌥Return` (or pad keys 1+2 together) | Opens a [cmux](https://cmux.dev) (optional) workspace running `claude "<what you said>"`. If you're looking at a Claude session in cmux, it sends the instruction there instead |
 
 - **Tap** to start, and it **stops automatically when you stop talking** (Silero VAD, adjustable pause). Or **hold** for push-to-talk. `Esc` cancels.
@@ -54,6 +54,23 @@ ch57x-keyboard-tool upload < macropad/murmur-pad.yaml   # F18, F19, play/pause, 
 
 These pads send press and release together, so the keys act as toggles. Auto-stop ends the recording.
 
+## Ask AI
+
+**Providers.** Auto uses the Claude Code or Codex CLI (your own subscription) when online and falls back to the local Ollama model offline. Pick one in Settings. Weather questions get a live forecast card from Open-Meteo.
+
+**Your own services (optional).** Point Murmur at a server you run, typically over Tailscale, and ask about it by voice. Each answer comes with a card; follow-ups are answered only from data already shown, never guessed.
+
+| Ask | Source | Example |
+|---|---|---|
+| Money | a [`fin`-style](#finance-endpoint) finance dashboard | "how much NVIDIA do I have", "what did I spend last month", "show me the uncategorized" |
+| Photos | [Immich](https://immich.app) | "how many photos of Alex do I have", "pull up what I did on October 7th" (opens Immich filtered to that day) |
+| Movies & shows | [Seerr](https://github.com/seerr-team/seerr) / Overseerr / Jellyseerr | "request Dune on Seerr" (shows the match; nothing is requested until you click, using your default quality profile) |
+| Server | [Beszel](https://beszel.dev) | "how much space is left on my 8TB drive", "what's using the most CPU on my server" |
+
+Set it up in **Settings → Homelab** (host name) and **Settings → Finance** (dashboard URL). API keys go in the same screen and are stored in the macOS Keychain (service `murmur.homelab`), never in preferences or the repo. Money, photo, media and server answers use the local model only, unless you turn on "Allow cloud models".
+
+<a id="finance-endpoint"></a>The finance card expects `GET <dashboard>/api/fin/<command>` to return the JSON of a read-only finance CLI (`holdings`, `accounts`, `overview`, `spending`, `txns`, `brief`).
+
 ## Claude Code mode
 
 Needs [cmux](https://cmux.dev) and the `claude` CLI. In Settings you can set:
@@ -66,7 +83,7 @@ The prompt is passed through a file, so spoken text is never parsed by your shel
 
 ## Privacy
 
-Everything runs locally. The only network calls are to Ollama on `127.0.0.1`. History is stored in `~/Library/Application Support/Murmur/history.json`; clear it from the History window.
+Dictation and cleanup run locally (Ollama on `127.0.0.1`). Ask AI calls the Claude/Codex CLI only when you choose a frontier provider, and never for money, photo, media or server questions unless you allow it. Homelab skills talk only to the host you configure. Finance, photo, media and server answers are never written to history. History is stored in `~/Library/Application Support/Murmur/history.json`; clear it from the History window.
 
 ## Development
 
@@ -75,10 +92,11 @@ Everything runs locally. The only network calls are to Ollama on `127.0.0.1`. Hi
 Murmur.app/Contents/MacOS/Murmur --demo     # cycle UI states with fake data (no mic, no paste)
 Murmur.app/Contents/MacOS/Murmur --selftest clip.wav   # transcribe + clean up a file, print timings
 Murmur.app/Contents/MacOS/Murmur --vadtest clip.wav    # show where auto-stop would trigger
+swift build && .build/debug/Murmur --fintest <fixtures>  # debug builds only: finance intents/answers from saved JSON (also --phototest, --mediatest, --hosttest); exits 1 on any failure
 python3 scripts/eval-cleanup.py Resources/cleanup-prompt.txt   # evaluate the cleanup prompt
 ```
 
-Code map: `Engines.swift` (Parakeet, Silero VAD, audio capture, Ollama), `AppModel.swift` (state machine), `Agent.swift` (cmux / Claude Code), `System.swift` (hotkeys, paste, prefs, history), `Views.swift` and `Panels.swift` (UI).
+Code map: `Engines.swift` (Parakeet, Silero VAD, audio capture, Ollama), `AppModel.swift` (state machine), `Agent.swift` (cmux / Claude Code), `Providers.swift` (Claude/Codex/Ollama), `Rich.swift` (answer cards), `Weather.swift`, `Finance.swift`, `Skills.swift` (homelab skills + Keychain) with `Photos.swift`, `Media.swift`, `Host.swift`, `System.swift` (hotkeys, paste, prefs, history), `Views.swift` and `Panels.swift` (UI).
 
 ## License
 

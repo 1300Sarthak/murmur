@@ -4,12 +4,17 @@ import SwiftUI
 // MARK: - Palette
 
 enum Palette {
-    static let dictate = LinearGradient(colors: [Color(hex: 0xFF7A6B), Color(hex: 0xFFC36B)], startPoint: .leading, endPoint: .trailing)
-    static let ask = LinearGradient(colors: [Color(hex: 0x9B8CFF), Color(hex: 0x5AD8FF)], startPoint: .leading, endPoint: .trailing)
-    static let agent = LinearGradient(colors: [Color(hex: 0x5BE49B), Color(hex: 0x3CC8C8)], startPoint: .leading, endPoint: .trailing)
-    static let dictateSolid = Color(hex: 0xFF8F6B)
-    static let askSolid = Color(hex: 0x8FA8FF)
-    static let agentSolid = Color(hex: 0x4FD6B0)
+    // Quiet instrument palette: graphite glass, bone text, one solid muted color per mode, red only for recording.
+    static let bone = Color(hex: 0xECE6DA)
+    static let rec = Color(hex: 0xE5534B)
+    static let surface = Color(hex: 0x2A2C30)
+    static let dictateSolid = bone
+    static let askSolid = Color(hex: 0x8EA2C6)
+    static let agentSolid = Color(hex: 0x9DB89B)
+    static func flat(_ c: Color) -> LinearGradient { LinearGradient(colors: [c, c], startPoint: .leading, endPoint: .trailing) }
+    static let dictate = flat(dictateSolid)
+    static let ask = flat(askSolid)
+    static let agent = flat(agentSolid)
     static func gradient(_ m: AppModel.Mode) -> LinearGradient {
         switch m { case .dictate: dictate; case .ask: ask; case .agent: agent }
     }
@@ -30,7 +35,7 @@ struct Glass<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(.ultraThinMaterial, in: shape)
-            .background(Color.black.opacity(0.55), in: shape)
+            .background(Color(hex: 0x1A1B1E).opacity(0.72), in: shape)
             .overlay(shape.strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
             .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
             .environment(\.colorScheme, .dark)
@@ -63,48 +68,74 @@ struct Glass<S: InsettableShape>: ViewModifier {
         switch model.phase {
         case .recording:
             HStack(spacing: 12) {
-                RecordingDot(color: Palette.solid(model.mode), progress: model.silenceProgress)
+                RecordingDot(color: Palette.rec, progress: model.silenceProgress)
                 Waveform(levels: model.levels, gradient: Palette.gradient(model.mode))
                     .frame(width: 150, height: 26)
                 TimelineView(.periodic(from: model.recordStart, by: 0.5)) { ctx in
                     Text(elapsed(ctx.date))
-                        .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                        .font(.system(size: 12, weight: .medium).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.55))
                 }
-                if model.mode == .ask {
-                    Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ask)
-                } else if model.mode == .agent {
+                if model.mode == .agent {
                     Image(systemName: "terminal.fill").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.agent)
                 }
             }
-        case .transcribing: status(label: "Transcribing", tint: Palette.gradient(model.mode))
-        case .polishing: status(label: "Polishing", tint: Palette.gradient(model.mode))
-        case .thinking: status(label: "Thinking", tint: Palette.ask)
+        case .transcribing: status(words: Quips.transcribing, tint: Palette.gradient(model.mode))
+        case .polishing: status(words: model.mode == .agent ? Quips.agent : Quips.polishing, tint: Palette.gradient(model.mode))
+        case .thinking: status(words: Quips.thinking, tint: Palette.ask)
         case .done(let msg):
             Label(msg, systemImage: "checkmark.circle.fill")
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white, Color(hex: 0x5BE49B))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white, Palette.agentSolid)
         case .error(let msg):
             Label(msg, systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white, Color(hex: 0xFFB454))
                 .lineLimit(1)
         case .idle: EmptyView()
         }
     }
 
-    private func status(label: String, tint: LinearGradient) -> some View {
+    private func status(words: [String], tint: LinearGradient) -> some View {
         HStack(spacing: 10) {
             BouncingDots(gradient: tint)
-            Text(label)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.85))
+            RotatingWord(words: words)
         }
     }
 
     private func elapsed(_ now: Date) -> String {
         let s = max(0, Int(now.timeIntervalSince(model.recordStart)))
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// Playful status words, Claude Code style. A new one fades in every ~1.4 s.
+enum Quips {
+    static let transcribing = ["Transcribing", "Unmumbling", "Deciphering", "Listening back", "Decoding vibes", "Parsing syllables"]
+    static let polishing = ["Polishing", "De-umming", "Buffing", "Wordsmithing", "Sprinkling commas", "Herding words",
+                            "Finessing", "Tidying", "Un-rambling", "Ironing sentences", "Fluffing prose"]
+    static let thinking = ["Thinking", "Pondering", "Noodling", "Cogitating", "Ruminating", "Percolating", "Brewing",
+                           "Conjuring", "Mulling", "Consulting the oracle", "Galaxy-braining"]
+    static let agent = ["Briefing Claude", "Summoning Claude", "Sharpening the prompt", "Rolling up sleeves", "Waking the agent"]
+}
+
+struct RotatingWord: View {
+    let words: [String]
+    @State private var start = Date()
+    @State private var offset = Int.random(in: 0..<100)
+
+    var body: some View {
+        TimelineView(.periodic(from: start, by: 1.4)) { ctx in
+            let step = Int(ctx.date.timeIntervalSince(start) / 1.4)
+            Text(words[(offset + step) % words.count] + "…")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .id(step)
+                .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+                .animation(.easeOut(duration: 0.25), value: step)
+        }
+        .frame(minWidth: 120, alignment: .leading)
+        .clipped()
     }
 }
 
@@ -207,10 +238,13 @@ struct BouncingDots: View {
                         ForEach(Array(model.conversation.enumerated()), id: \.offset) { i, msg in
                             if msg.role == "user" {
                                 Text(msg.content)
-                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.5))
                                     .textSelection(.enabled)
                             } else {
+                                if let w = model.weatherCards[i] { WeatherCard(w: w) }
+                                if let f = model.financeCards[i] { FinanceCard(r: f) }
+                                if let k = model.skillCards[i] { k.card }
                                 answer(msg.content, streaming: model.askStreaming && i == model.conversation.count - 1)
                             }
                         }
@@ -219,7 +253,7 @@ struct BouncingDots: View {
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 300)
+                .frame(maxHeight: 340)
                 .fixedSize(horizontal: false, vertical: true)
                 .onChange(of: model.lastAnswer) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
@@ -230,10 +264,11 @@ struct BouncingDots: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sparkles").font(.system(size: 13, weight: .bold)).foregroundStyle(Palette.ask)
-            Text("Ask").font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundStyle(.white)
-            Text(Prefs.llmModel).font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
+        HStack(spacing: 9) {
+            AIOrb(active: model.askStreaming)
+            Text("AI")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Palette.bone)
             Spacer()
             Button { model.closeAsk() } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
@@ -248,23 +283,25 @@ struct BouncingDots: View {
 
     @ViewBuilder private func answer(_ text: String, streaming: Bool) -> some View {
         if text.isEmpty && streaming {
-            BouncingDots(gradient: Palette.ask)
+            HStack(spacing: 10) {
+                BouncingDots(gradient: Palette.ask)
+                if !model.askStatus.isEmpty {
+                    Text(model.askStatus + "…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: model.askStatus)
         } else {
-            let md = (try? AttributedString(markdown: text + (streaming ? " ▍" : ""),
-                                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
-            Text(md)
-                .font(.system(size: 14.5, design: .rounded))
-                .lineSpacing(3)
-                .foregroundStyle(.white.opacity(0.92))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            RichAnswer(text: text, streaming: streaming)
         }
     }
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Text("F19 follow-up  ·  Esc close")
-                .font(.system(size: 11, design: .rounded))
+            Text("Press again to follow up, Esc to close")
+                .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.35))
             Spacer()
             Button(copied ? "Copied" : "Copy") {
@@ -281,14 +318,30 @@ struct BouncingDots: View {
     }
 }
 
+/// A small glowing gradient orb; it slowly spins while an answer streams.
+struct AIOrb: View {
+    var active: Bool
+    @State private var spin = false
+    var body: some View {
+        // A small solid dot that breathes only while an answer is arriving.
+        Circle()
+            .fill(Palette.askSolid)
+            .frame(width: 8, height: 8)
+            .opacity(spin ? 0.35 : 1)
+            .animation(active ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .easeOut(duration: 0.3), value: spin)
+            .onAppear { spin = active }
+            .onChange(of: active) { spin = active }
+    }
+}
+
 struct ChipStyle: ButtonStyle {
     var prominent: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .font(.system(size: 12, weight: .semibold))
             .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(prominent ? AnyShapeStyle(Palette.ask) : AnyShapeStyle(Color.white.opacity(0.1)), in: Capsule())
-            .foregroundStyle(prominent ? Color.black.opacity(0.85) : Color.white.opacity(0.85))
+            .background(prominent ? AnyShapeStyle(Palette.bone) : AnyShapeStyle(Color.white.opacity(0.08)), in: Capsule())
+            .foregroundStyle(prominent ? Color(hex: 0x1E1F22) : Palette.bone.opacity(0.85))
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
@@ -303,16 +356,16 @@ struct ChipStyle: ButtonStyle {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Murmur").font(.system(size: 15, weight: .bold, design: .rounded))
+                Text("Murmur").font(.system(size: 15, weight: .bold))
                 Spacer()
                 StatusDot(on: model.speechReady, label: "Parakeet")
                 StatusDot(on: model.llmReady, label: "AI")
             }
 
             HStack(spacing: 10) {
-                ActionTile(title: "Dictate", keys: "F18 · ⌃⌥Space", icon: "mic.fill", gradient: Palette.dictate,
+                ActionTile(title: "Dictate", keys: "F18 · ⌥Space", icon: "mic.fill", gradient: Palette.dictate,
                            active: model.isRecording && model.mode == .dictate) { model.toggle(.dictate) }
-                ActionTile(title: "Ask AI", keys: "F19 · ⌃⌥/", icon: "sparkles", gradient: Palette.ask,
+                ActionTile(title: "Ask AI", keys: "F19 · ⌥/", icon: "sparkles", gradient: Palette.ask,
                            active: model.isRecording && model.mode == .ask) { model.toggle(.ask) }
             }
 
@@ -368,7 +421,7 @@ struct StatusDot: View {
     var label: String
     var body: some View {
         HStack(spacing: 4) {
-            Circle().fill(on ? Color(hex: 0x5BE49B) : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
+            Circle().fill(on ? Palette.agentSolid : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
             Text(label).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
         }
         .help(on ? "\(label) ready" : "\(label) not ready")
@@ -393,7 +446,7 @@ struct ActionTile: View {
                     .frame(width: 30, height: 30)
                     .background(gradient, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(active ? "Stop" : title).font(.system(size: 13, weight: .semibold, design: .rounded))
+                    Text(active ? "Stop" : title).font(.system(size: 13, weight: .semibold))
                     Text(keys).font(.system(size: 10.5)).foregroundStyle(.secondary)
                 }
             }
@@ -480,7 +533,7 @@ struct RecentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                Text(model.history.isEmpty ? "Nothing yet. Press F18 and start talking." : "Select an entry")
+                Text(model.history.isEmpty ? "Nothing yet. Press ⌥Space and start talking." : "Select an entry")
                     .foregroundStyle(.secondary)
             }
         }
@@ -513,6 +566,18 @@ struct RecentRow: View {
     @AppStorage("agentAccount") private var agentAccount = ""
     @AppStorage("agentCwd") private var agentCwd = "~/projects"
     @AppStorage("agentFlags") private var agentFlags = ""
+    @AppStorage("askProvider") private var askProvider = "auto"
+    @AppStorage("useContext") private var useContext = true
+    @State private var contextInfo = SettingsView.describeContext()
+    @AppStorage("claudeModel") private var claudeModel = "haiku"
+    @AppStorage("weatherLocation") private var weatherLocation = ""
+    @AppStorage("financeOn") private var financeOn = true
+    @AppStorage("financeURL") private var financeURL = defaultFinanceURL
+    @AppStorage("homelabHost") private var homelabHost = ""
+    @State private var keys: [String: String] = [:]
+    @AppStorage("financeCloud") private var financeCloud = false
+    @State private var financeTest = ""
+    @AppStorage("agentTerminal") private var agentTerminal = "terminal"
     @AppStorage("autoStopSeconds") private var autoStopSeconds = 1.2
     @State private var login = LoginItem.enabled
     @State private var tick = 0 // re-read permission state when the window regains focus
@@ -553,18 +618,80 @@ struct RecentRow: View {
                     }
                 }
             }
+            Section("Ask AI (pad 2)") {
+                Picker("Answer with", selection: $askProvider) {
+                    ForEach(AskProvider.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                if askProvider == "auto" || askProvider == "claude" {
+                    Picker("Claude model", selection: $claudeModel) {
+                        Text("Haiku · fastest").tag("haiku")
+                        Text("Sonnet").tag("sonnet")
+                        Text("Opus · smartest").tag("opus")
+                    }
+                }
+                TextField("Your location (weather)", text: $weatherLocation, prompt: Text("e.g. Dublin, CA"))
+                Text("Auto uses Claude (with web search), then Codex, when you're online, and the local model when you're offline or they fail. Weather comes live from Open-Meteo. Frontier answers use your Claude/Codex subscription.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Finance (homelab)") {
+                Toggle("Finance (homelab)", isOn: $financeOn)
+                TextField("Dashboard URL", text: $financeURL)
+                Toggle("Allow cloud models for finance and homelab questions", isOn: $financeCloud)
+                LabeledContent("Connection") {
+                    HStack {
+                        if !financeTest.isEmpty { Text(financeTest).foregroundStyle(financeTest == "Reachable" ? .green : .red) }
+                        Button("Test connection") {
+                            financeTest = "Testing…"
+                            Task { financeTest = await Finance.test() ? "Reachable" : "Unreachable" }
+                        }.controlSize(.small)
+                    }
+                }
+                Text("Money questions (\"how much NVIDIA do I have\") read live numbers from your dashboard over Tailscale and are answered by the local model only. Turn on cloud only if you accept sending those numbers to Claude/Codex.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Homelab") {
+                TextField("Host", text: $homelabHost, prompt: Text("my-server.tailnet.ts.net"))
+                ForEach(HomelabKeys.all, id: \.account) { k in
+                    SecureField(k.label, text: Binding(get: { keys[k.account] ?? "" }, set: { keys[k.account] = $0 }),
+                                prompt: Text(Keychain.get(k.account) == nil ? "not set" : "saved"))
+                }
+                Button("Save keys to Keychain") {
+                    for (a, v) in keys where !v.isEmpty { Keychain.set(a, v) }
+                    keys = [:]
+                }.controlSize(.small)
+                Text("Photos (Immich), media requests (Seerr) and server stats (Beszel) on your own server. Keys are stored in the macOS Keychain, never in preferences, and answers use the local model unless cloud is allowed above.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Personal context (Ask AI)") {
+                Toggle("Give Ask AI my context document", isOn: $useContext)
+                LabeledContent("Document") {
+                    HStack {
+                        Text(contextInfo).foregroundStyle(.secondary)
+                        Button("Choose…") { chooseContext() }.controlSize(.small)
+                        if FileManager.default.fileExists(atPath: Prefs.contextURL.path) {
+                            Button("Remove") { try? FileManager.default.removeItem(at: Prefs.contextURL); contextInfo = Self.describeContext() }
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                Text("Stored privately in Murmur's folder and used only for Ask AI, never dictation. Frontier calls run with telemetry off, no saved sessions, no plugins, hooks or memories; whether a provider trains on chats is your account's privacy setting.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Claude Code (pad 1+2)") {
+                Picker("Open in", selection: $agentTerminal) {
+                    Text("iTerm2").tag("iterm")
+                    Text("Terminal").tag("terminal")
+                    Text("cmux").tag("cmux")
+                }
                 TextField("cca account (optional)", text: $agentAccount, prompt: Text("blank = plain claude"))
                 TextField("Start in folder", text: $agentCwd, prompt: Text("~/projects"))
                 TextField("Extra claude flags", text: $agentFlags, prompt: Text("--permission-mode auto"))
-                Text(Cmux.installed
-                     ? "Opens a cmux workspace running \(agentAccount.isEmpty ? "claude" : "cca " + agentAccount) with what you said. If you're looking at a Claude session in cmux, it sends the instruction there instead."
-                     : "cmux not found at /Applications/cmux.app.")
+                Text("Opens a new window running \(agentAccount.isEmpty ? "claude" : "cca " + agentAccount) with what you said. If you're looking at a Claude session in iTerm2, Terminal or cmux, it sends the instruction there instead.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Shortcuts") {
-                LabeledContent("Dictate", value: "Macro pad 1 (F18) · ⌃⌥Space")
-                LabeledContent("Ask AI", value: "Macro pad 2 (F19) · ⌃⌥/")
+                LabeledContent("Dictate", value: "Macro pad 1 (F18) · ⌥Space · ⌃⌥Space")
+                LabeledContent("Ask AI", value: "Macro pad 2 (F19) · ⌥/ · ⌃⌥/")
                 LabeledContent("Claude Code", value: "Pad 1 + 2 together · ⌃⌥Return")
                 Text("Tap to start; it stops when you pause (or tap again). Hold for push-to-talk. Esc cancels.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -586,6 +713,25 @@ struct RecentRow: View {
         .formStyle(.grouped)
         .frame(width: 540, height: 720)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in tick += 1 }
+    }
+
+    static func describeContext() -> String {
+        guard let s = try? String(contentsOf: Prefs.contextURL, encoding: .utf8) else { return "None" }
+        return "\(s.split(whereSeparator: \.isWhitespace).count) words"
+    }
+
+    private func chooseContext() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText, .init(filenameExtension: "md")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Copied in (owner-only permissions) so the original can move or be deleted.
+        try? FileManager.default.removeItem(at: Prefs.contextURL)
+        if (try? FileManager.default.copyItem(at: url, to: Prefs.contextURL)) != nil {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Prefs.contextURL.path)
+        }
+        contextInfo = Self.describeContext()
     }
 
     static func label(for file: String) -> String {

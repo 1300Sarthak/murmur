@@ -155,6 +155,9 @@ enum LoginItem {
 
 // MARK: - Preferences
 
+/// No default finance dashboard: set your own self-hosted URL in Settings.
+let defaultFinanceURL = ""
+
 enum Prefs {
     static let d = UserDefaults.standard
     static func register() {
@@ -167,6 +170,15 @@ enum Prefs {
             "autoStop": true,
             "speechModel": "ggml-parakeet-tdt-0.6b-v2-q8_0.bin",
             "agentAccount": "",
+            "askProvider": "auto",
+            "useContext": true,
+            "claudeModel": "haiku",
+            "weatherLocation": "",
+            "financeOn": true,
+            "financeURL": defaultFinanceURL,
+            "financeCloud": false,
+            "homelabHost": "",
+            "agentTerminal": FileManager.default.fileExists(atPath: "/Applications/iTerm.app") ? "iterm" : "terminal",
             "agentCwd": "~/projects",
             "agentFlags": "",
             "autoStopSeconds": 1.2,
@@ -179,6 +191,24 @@ enum Prefs {
     static var autoStop: Bool { d.bool(forKey: "autoStop") }
     static var autoStopSeconds: Double { max(0.5, d.double(forKey: "autoStopSeconds")) }
     static var agentAccount: String { d.string(forKey: "agentAccount") ?? "" }
+    /// Homelab hostname (e.g. a Tailscale MagicDNS name) for photo, media and server-stat questions; empty = off.
+    static var homelabHost: String { (d.string(forKey: "homelabHost") ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    static var askProvider: AskProvider { AskProvider(rawValue: d.string(forKey: "askProvider") ?? "auto") ?? .auto }
+    static var useContext: Bool { d.bool(forKey: "useContext") }
+    static var contextURL: URL { supportDir.appendingPathComponent("context.md") }
+    /// Your personal context document, if one is set and enabled (Ask AI only, never dictation cleanup).
+    static var personalContext: String? {
+        guard useContext, let s = try? String(contentsOf: contextURL, encoding: .utf8),
+              !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return s
+    }
+    static var claudeModel: String { d.string(forKey: "claudeModel").flatMap { $0.isEmpty ? nil : $0 } ?? "haiku" }
+    static var financeOn: Bool { d.bool(forKey: "financeOn") }
+    static var financeURL: String { d.string(forKey: "financeURL") ?? "" }
+    /// Off by default: finance data only ever goes to the local model.
+    static var financeCloud: Bool { d.bool(forKey: "financeCloud") }
+    static var weatherLocation: String { d.string(forKey: "weatherLocation") ?? "" }
+    static var agentTerminal: String { d.string(forKey: "agentTerminal") ?? "terminal" }
     static var agentCwd: String { d.string(forKey: "agentCwd") ?? "~/projects" }
     static var agentFlags: String { d.string(forKey: "agentFlags") ?? "" }
     static var speechModel: String { d.string(forKey: "speechModel") ?? "ggml-parakeet-tdt-0.6b-v2-q8_0.bin" }

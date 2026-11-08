@@ -59,7 +59,7 @@ final class AppModel {
     let panels = Panels()
 
     // Hotkey IDs
-    private enum HK: UInt32 { case padDictate = 1, padAsk, kbDictate, kbAsk, escape, kbAgent }
+    private enum HK: UInt32 { case padDictate = 1, padAsk, kbDictate, kbAsk, escape, kbAgent, optDictate, optAsk }
 
     func start() {
         Prefs.register()
@@ -72,21 +72,52 @@ final class AppModel {
             DispatchQueue.main.async { if self?.isRecording == true { self?.stopRecording() } }
         }
 
-        // Macro pad sends F18 / F19. Keyboard fallbacks: ⌃⌥Space (dictate), ⌃⌥/ (ask). Hold or tap.
-        HotKeys.shared.register(id: HK.padDictate.rawValue, keyCode: kVK_F18) { [weak self] in self?.key(.dictate, pressed: $0) }
-        HotKeys.shared.register(id: HK.padAsk.rawValue, keyCode: kVK_F19) { [weak self] in self?.key(.ask, pressed: $0) }
-        HotKeys.shared.register(id: HK.kbDictate.rawValue, keyCode: kVK_Space, modifiers: controlKey | optionKey) { [weak self] in self?.key(.dictate, pressed: $0) }
-        HotKeys.shared.register(id: HK.kbAsk.rawValue, keyCode: kVK_ANSI_Slash, modifiers: controlKey | optionKey) { [weak self] in self?.key(.ask, pressed: $0) }
-        HotKeys.shared.register(id: HK.kbAgent.rawValue, keyCode: kVK_Return, modifiers: controlKey | optionKey) { [weak self] in self?.key(.agent, pressed: $0) }
-
         if CommandLine.arguments.contains("--demo") { return runDemo() }
+        #if DEBUG // fixture and live-provider test hooks: `swift build` (debug) only, never in the shipped app
+        if let i = CommandLine.arguments.firstIndex(of: "--fintest"), i + 1 < CommandLine.arguments.count {
+            return Finance.selfTest(dir: CommandLine.arguments[i + 1], pngDir: CommandLine.arguments[safe: i + 2])
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--mediatest"), i + 1 < CommandLine.arguments.count { return MediaTest.run(fixtures: CommandLine.arguments[i + 1], pngDir: CommandLine.arguments[safe: i + 2]) }
+        if let i = CommandLine.arguments.firstIndex(of: "--phototest"), i + 1 < CommandLine.arguments.count {
+            return PhotosTest.run(fixtures: CommandLine.arguments[i + 1])
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--hosttest"), i + 1 < CommandLine.arguments.count { return HostTest.run(fixtures: CommandLine.arguments[i + 1], pngDir: CommandLine.arguments[safe: i + 2]) }
         if let i = CommandLine.arguments.firstIndex(of: "--agenttest"), i + 1 < CommandLine.arguments.count {
             // Opens a background (unfocused) Claude Code workspace with the given prompt, exactly as agent mode would.
             let prompt = CommandLine.arguments[i + 1]
-            DispatchQueue.global().async {
-                let ok = Cmux.newSession(prompt: prompt, account: Prefs.agentAccount, cwd: Prefs.agentCwd, flags: Prefs.agentFlags, focus: false)
-                print("AGENTTEST newSession=\(ok)")
+            Task {
+                let app = Prefs.agentTerminal
+                let ok = app == "cmux"
+                    ? Cmux.newSession(prompt: prompt, account: Prefs.agentAccount, cwd: Prefs.agentCwd, flags: Prefs.agentFlags, focus: false)
+                    : await Terminals.newSession(prompt: prompt, account: Prefs.agentAccount, cwd: Prefs.agentCwd, flags: Prefs.agentFlags, app: app)
+                print("AGENTTEST app=\(app) newSession=\(ok)")
                 exit(ok ? 0 : 1)
+            }
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--asktest"), i + 1 < CommandLine.arguments.count {
+            // Streams one Ask AI answer through the real provider chain (per current Settings) and prints timings.
+            let q = CommandLine.arguments[i + 1]
+            let chain = askChain()
+            Task {
+                let t0 = Date()
+                var first: Double?
+                var text = ""
+                for provider in chain {
+                    do {
+                        for try await piece in stream(provider, system: await askSystemPrompt(for: q), history: [.init(role: "user", content: q)]) {
+                            if piece.hasPrefix(FrontierCLI.statusMarker) { print("STATUS \(piece.dropFirst()) at \(String(format: "%.1f", Date().timeIntervalSince(t0)))s"); continue }
+                            if first == nil { first = Date().timeIntervalSince(t0) }
+                            text += piece
+                        }
+                        print(String(format: "ASKTEST chain=%@ used=%@ first=%.2fs total=%.2fs", chain.map(\.rawValue).joined(separator: ">"), provider.rawValue, first ?? -1, Date().timeIntervalSince(t0)))
+                        print("ANSWER: \(text)")
+                        exit(0)
+                    } catch {
+                        print("ASKTEST \(provider.rawValue) failed: \(error.localizedDescription)")
+                    }
+                }
+                exit(1)
             }
             return
         }
@@ -99,6 +130,7 @@ final class AppModel {
             }
             return
         }
+        #endif
         if let i = CommandLine.arguments.firstIndex(of: "--vadtest"), i + 1 < CommandLine.arguments.count {
             return runVadTest(wav: CommandLine.arguments[i + 1])
         }
@@ -106,6 +138,17 @@ final class AppModel {
             return runSelfTest(wav: CommandLine.arguments[i + 1])
         }
 
+        // Only the real app grabs global hotkeys (demo/test runs never do). Macro pad sends F18 / F19. Keyboard: ⌥Space or ⌃⌥Space (dictate), ⌥/ or ⌃⌥/ (ask), ⌃⌥Return (agent). Hold or tap.
+        // None are macOS system shortcuts; the ⌥ pair only replaces typing a non-breaking space and ÷.
+        HotKeys.shared.register(id: HK.padDictate.rawValue, keyCode: kVK_F18) { [weak self] in self?.key(.dictate, pressed: $0) }
+        HotKeys.shared.register(id: HK.padAsk.rawValue, keyCode: kVK_F19) { [weak self] in self?.key(.ask, pressed: $0) }
+        HotKeys.shared.register(id: HK.kbDictate.rawValue, keyCode: kVK_Space, modifiers: controlKey | optionKey) { [weak self] in self?.key(.dictate, pressed: $0) }
+        HotKeys.shared.register(id: HK.kbAsk.rawValue, keyCode: kVK_ANSI_Slash, modifiers: controlKey | optionKey) { [weak self] in self?.key(.ask, pressed: $0) }
+        HotKeys.shared.register(id: HK.optDictate.rawValue, keyCode: kVK_Space, modifiers: optionKey) { [weak self] in self?.key(.dictate, pressed: $0) }
+        HotKeys.shared.register(id: HK.optAsk.rawValue, keyCode: kVK_ANSI_Slash, modifiers: optionKey) { [weak self] in self?.key(.ask, pressed: $0) }
+        HotKeys.shared.register(id: HK.kbAgent.rawValue, keyCode: kVK_Return, modifiers: controlKey | optionKey) { [weak self] in self?.key(.agent, pressed: $0) }
+
+        Skills.matchers = [Photos.match, Media.match, Host.match]
         Task { _ = await Permissions.requestMic() }
         if !Paster.canPaste { Paster.promptForAccessibility() }
 
@@ -187,7 +230,6 @@ final class AppModel {
     // MARK: Recording
 
     func startRecording(_ m: Mode) {
-        guard speechReady else { return flash(.error("Speech model still loading…")) }
         guard Permissions.micGranted else {
             Task { _ = await Permissions.requestMic() }
             return flash(.error("Microphone access needed"))
@@ -239,13 +281,17 @@ final class AppModel {
         silenceProgress = 0
         let seconds = Double(samples.count) / 16_000
         Sound.play("Pop")
-        guard seconds > 0.35, let parakeet else { phase = .idle; refresh(); return }
+        guard seconds > 0.35 else { phase = .idle; refresh(); return }
         phase = .transcribing
         refresh()
 
         let mySession = session
         let mode = self.mode
         pipeline = Task {
+            // You can start talking right after launch; if the model is still loading, wait for it here.
+            var waited = 0
+            while parakeet == nil, waited < 300, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+            guard let parakeet, session == mySession else { return flash(.error("Speech model failed to load")) }
             let raw = await parakeet.transcribe(samples)
             guard session == mySession, !Task.isCancelled else { return }
             guard !raw.isEmpty else { return flash(.error("Didn't catch that")) }
@@ -320,25 +366,25 @@ final class AppModel {
             text = await polish(raw)
             guard session == mySession, !Task.isCancelled else { return }
         }
-        guard Cmux.installed else {
+        let terminal = Prefs.agentTerminal
+        if terminal == "cmux", !Cmux.installed {
             Paster.copy(text)
             return flash(.error("cmux not found. Instruction copied"))
         }
         record(HistoryItem(kind: .agent, raw: raw, text: text, app: "Claude Code", seconds: seconds))
-        let fromCmux = targetApp?.bundleIdentifier == "com.cmuxterm.app"
         let (account, cwd, flags) = (Prefs.agentAccount, Prefs.agentCwd, Prefs.agentFlags)
-        let instruction = text
-        let result: String? = await Task.detached {
-            // Looking at a live Claude session in cmux: talk to it. Otherwise start a fresh one.
-            if fromCmux, let target = Cmux.focusedClaude() {
-                return Cmux.send(instruction, to: target) ? "Sent to Claude" : nil
-            }
-            return Cmux.newSession(prompt: instruction, account: account, cwd: cwd, flags: flags) ? "Started Claude Code" : nil
-        }.value
+        var result: String?
+        // Looking at a live Claude session in a terminal: talk to it. Otherwise start a fresh one.
+        if let front = Terminals.isTerminal(bundleID: targetApp?.bundleIdentifier),
+           let target = await Terminals.focusedClaude(app: front) {
+            result = await Terminals.send(text, to: target) ? "Sent to Claude" : nil
+        } else {
+            result = await Terminals.newSession(prompt: text, account: account, cwd: cwd, flags: flags, app: terminal) ? "Started Claude Code" : nil
+        }
         guard session == mySession else { return }
         if let result { flash(.done(result)) } else {
             Paster.copy(text)
-            flash(.error("cmux didn't respond. Instruction copied"))
+            flash(.error("Couldn't reach the terminal. Instruction copied"))
         }
     }
 
@@ -395,7 +441,7 @@ final class AppModel {
     // MARK: Ask AI
 
     private func ask(_ question: String, seconds: Double) {
-        if !askVisible { conversation = [] }
+        if !askVisible { conversation = []; weatherCards = [:]; financeCards = [:]; skillCards = [:]; financeIntent = nil; financeActive = false }
         // Drop empty or failed turns so they don't pollute follow-up context.
         conversation.removeAll { $0.role == "assistant" && $0.content.isEmpty }
         conversation.append(.init(role: "user", content: question))
@@ -405,39 +451,169 @@ final class AppModel {
         phase = .thinking
         refresh()
 
-        let system = Ollama.Message(role: "system", content: """
-        You are Murmur, a fast local assistant the user talks to by voice. Their question was transcribed from speech, so \
-        forgive small transcription errors. Answer directly and concisely; lead with the answer. Use short Markdown \
-        (bold, lists, `code`) only when it helps. Today is \(Date().formatted(date: .complete, time: .omitted)).
-        """)
-        let history = [system] + conversation.dropLast()
         askGeneration += 1
         let gen = askGeneration
         let index = conversation.count - 1
+        // Money questions (and follow-ups to them) stay on the local model unless cloud is explicitly allowed.
+        // Homelab skills claim first: their detection is strict, while finance follow-ups accept any short dated question.
+        let skill = Skills.match(question)
+        let intent = skill == nil && Prefs.financeOn ? Finance.detect(question, previous: financeIntent) : nil
+        // Set synchronously, before any fetch, so even a cancelled finance turn keeps later turns local.
+        // Homelab skills (photos, media, server stats) only when the question isn't about money.
+        let financeTurn = intent != nil || skill != nil || financeActive
+        if intent != nil || skill != nil { financeActive = true }
+        if let intent { financeIntent = intent }
+        if skill != nil { financeIntent = nil } // "show me those" after a photos card must not reopen an old finance query
+        let chain = financeTurn && !Prefs.financeCloud ? [AskProvider.local] : askChain()
+        let earlier = Array(conversation.dropLast())
+        askStatus = ""
         askTask = Task {
+            var fin: Finance.Result?
+            if let intent {
+                // A cancelled or superseded ask must not attach a card to a newer conversation.
+                guard let got = await Finance.run(intent), !Task.isCancelled, gen == askGeneration else { return }
+                fin = got; financeCards[index] = got
+            }
+            var done: SkillResult?
+            if let skill {
+                let got = await skill()
+                guard !Task.isCancelled, gen == askGeneration else { return }
+                done = got; skillCards[index] = got
+            }
+            let prompt: String
+            if let fin { prompt = Finance.systemPrompt(fin) }
+            else if let done { prompt = Skills.systemPrompt(done) }
+            else if financeActive && Finance.isFollowUp(question) { prompt = Finance.followUpPrompt(earlierFacts) }
+            else if financeActive {
+                // A new, general question in a conversation that showed private data: the usual prompt (weather, etc.),
+                // still on the local model, with the earlier data available but never to be guessed beyond.
+                prompt = await askSystemPrompt(for: question) + "\n\nData shown earlier in this conversation (use only if relevant; never invent figures):\n" + earlierFacts
+            }
+            else { prompt = await askSystemPrompt(for: question) }
+            let system = Ollama.Message(role: "system", content: prompt)
+            let history = [system] + earlier
             var answer = ""
             var failed = false
-            do {
-                for try await piece in ollama.stream(model: Prefs.llmModel, messages: history) {
-                    guard !Task.isCancelled, gen == askGeneration else { break }
-                    answer += piece
-                    conversation[index].content = answer
-                    if phase == .thinking { phase = .idle; refresh() }
+            var lastError = ""
+            // Try each provider in order; move on only if one fails before producing any text.
+            if let fin, fin.final { conversation[index].content = fin.answer }
+            if let done, done.final { conversation[index].content = done.answer; answer = done.answer }
+            for provider in (fin?.final == true || done?.final == true) ? [] : chain {
+                guard !Task.isCancelled, gen == askGeneration else { break }
+                answerSource = provider.short
+                do {
+                    for try await piece in stream(provider, system: system.content, history: history) {
+                        guard !Task.isCancelled, gen == askGeneration else { break }
+                        if piece.hasPrefix(FrontierCLI.statusMarker) { askStatus = String(piece.dropFirst()); continue }
+                        askStatus = ""
+                        answer += piece
+                        // Finance replies are held back until checked against the data.
+                        if fin == nil && done == nil { conversation[index].content = answer }
+                        if phase == .thinking { phase = .idle; refresh() }
+                    }
+                    if provider == .local { llmReady = true }
+                    failed = false
+                    break
+                } catch {
+                    failed = true
+                    lastError = error.localizedDescription
+                    if provider == .local { llmReady = false }
+                    if !answer.isEmpty { break }
                 }
-                llmReady = true
-            } catch {
-                failed = true
-                if !Task.isCancelled, gen == askGeneration {
-                    conversation[index].content = "**Couldn't reach the local model.** Make sure Ollama is running and `\(Prefs.llmModel)` is pulled.\n\n`\(error.localizedDescription)`"
-                    llmReady = false
-                }
+            }
+            if let fin, !fin.final, !Task.isCancelled, gen == askGeneration {
+                // Model down or it quoted a number that isn't in the data: show the answer computed from the data.
+                if failed || answer.isEmpty || !Finance.numbersGrounded(answer, in: fin) { answer = fin.answer }
+                conversation[index].content = answer
+                failed = false
+            }
+            if let done, !done.final, !Task.isCancelled, gen == askGeneration {
+                if failed || answer.isEmpty || !Finance.numbersGrounded(answer, facts: done.facts) { answer = done.answer }
+                conversation[index].content = answer
+                failed = false
+            }
+            if failed, answer.isEmpty, !Task.isCancelled, gen == askGeneration {
+                conversation[index].content = "**Couldn't get an answer.** Tried \(chain.map(\.short).joined(separator: ", ")).\n\n`\(lastError)`"
             }
             // A newer ask or a close owns the UI now; leave it alone.
             guard gen == askGeneration else { return }
             askStreaming = false
             if phase == .thinking { phase = .idle }
             refresh()
-            if !failed, !answer.isEmpty { record(HistoryItem(kind: .ask, raw: question, text: answer, app: nil, seconds: seconds)) }
+            if !failed, !answer.isEmpty, !financeTurn { record(HistoryItem(kind: .ask, raw: question, text: answer, app: nil, seconds: seconds)) }
+        }
+    }
+
+    /// Which model the current Ask answer is streaming from (kept for history/debug; not shown in the UI).
+    var answerSource = ""
+    /// Transient status while the AI uses a tool, e.g. "Searching the web".
+    var askStatus = ""
+    /// Weather cards keyed by the index of the assistant message they belong to.
+    var weatherCards: [Int: Weather.Report] = [:]
+    /// Finance cards (private data, never persisted) keyed the same way.
+    var financeCards: [Int: Finance.Result] = [:]
+    /// Homelab skill cards (photos, media, server stats), keyed the same way and never persisted.
+    var skillCards: [Int: SkillResult] = [:]
+    /// Every fact shown so far in this conversation, so follow-ups are answered from data, not memory.
+    private var earlierFacts: String {
+        (financeCards.sorted { $0.key < $1.key }.map(\.value.facts) + skillCards.sorted { $0.key < $1.key }.map(\.value.facts))
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+    /// The last finance intent, so follow-ups ("and last month?") keep their kind.
+    var financeIntent: Finance.Intent?
+    /// True once any finance question was asked in this conversation (until the panel is reset).
+    var financeActive = false
+
+    /// System prompt for Ask: style, the current time, live weather when relevant, and the personal context.
+    private func askSystemPrompt(for question: String) async -> String {
+        var s = """
+        You are a fast assistant the user talks to by voice throughout their day. Their question was transcribed from \
+        speech, so forgive small transcription errors. Answer directly and concisely; lead with the answer. Use short \
+        Markdown (bold, lists, `code`) only when it helps. Use web search for anything current (news, prices, scores, \
+        hours, events). Never mention which AI model or company you are. \
+        It is now \(Date().formatted(date: .complete, time: .shortened)) (\(TimeZone.current.identifier)).
+        """
+        if !Prefs.weatherLocation.isEmpty { s += "\nThe user's home location is \(Prefs.weatherLocation)." }
+        if Weather.isWeatherQuestion(question),
+           let w = await Weather.fetch(question: question, home: Prefs.weatherLocation) {
+            weatherCards[conversation.count - 1] = w
+            s += "\n\nLive weather data (Open-Meteo, fetched just now). The user already sees it drawn as a weather card, " +
+                 "so reply in ONE short sentence with the takeaway (e.g. whether they need a jacket or umbrella), no numbers dump:\n\(w.summary)"
+        }
+        s += """
+
+        Formatting: plain Markdown renders nicely (lists, **bold**, tables, code). Optionally, when it replaces prose, you may \
+        emit ONE card as a fenced block: ```card {"type":"stat","value":"...","label":"...","note":"..."}``` for a single key \
+        number/answer, or ```card {"type":"facts","title":"...","items":[["Key","Value"]]}``` for 3-8 key facts. Otherwise plain text.
+        """
+        if let ctx = Prefs.personalContext {
+            s += "\n\nBackground about the user, for personalizing answers. Use it when relevant; don't recite it.\n<user_context>\n\(ctx)\n</user_context>"
+        }
+        return s
+    }
+
+    /// Provider order for this question: frontier CLIs when online (per the Settings choice), local last.
+    private func askChain() -> [AskProvider] {
+        let online = Connectivity.shared.online
+        var chain: [AskProvider]
+        switch Prefs.askProvider {
+        case .local: chain = []
+        case .claude: chain = [.claude]
+        case .codex: chain = [.codex]
+        case .auto: chain = [.claude, .codex]
+        }
+        chain = chain.filter { online && ($0 == .claude ? FrontierCLI.claudePath != nil : FrontierCLI.codexPath != nil) }
+        return chain + [.local]
+    }
+
+    private func stream(_ provider: AskProvider, system: String, history: [Ollama.Message]) -> AsyncThrowingStream<String, Error> {
+        switch provider {
+        case .claude: return FrontierCLI.claude(system: system, messages: history)
+        case .codex: return FrontierCLI.codex(system: system, messages: history)
+        // A 4B model's default window is too small for the context document.
+        case .local, .auto:
+            let messages = history.first?.role == "system" ? history : [.init(role: "system", content: system)] + history
+            return ollama.stream(model: Prefs.llmModel, messages: messages, contextTokens: Prefs.personalContext == nil ? nil : 16_384)
         }
     }
 
@@ -539,10 +715,18 @@ final class AppModel {
             (7.5, { self.mode = .ask; self.recordStart = Date(); self.phase = .recording }),
             (10.0, {
                 self.phase = .idle
+                self.weatherCards[1] = Weather.Report(place: "Dublin, California, US", temp: 63, feels: 59, code: 1, isDay: true, humidity: 54, wind: 6,
+                    days: [.init(name: "Today", code: 1, high: 71, low: 48, rain: 0), .init(name: "Tomorrow", code: 61, high: 64, low: 50, rain: 60), .init(name: "Day after", code: 2, high: 67, low: 47, rain: 10)],
+                    hours: (0..<8).map { .init(label: ["5p","6p","7p","8p","9p","10p","11p","12a"][$0], temp: 63 - $0 * 2, rain: $0 > 5 ? 20 : 0) })
                 self.conversation = [
+                    .init(role: "user", content: "What's the weather like?"),
+                    .init(role: "assistant", content: "Mild and clear tonight; grab a light jacket after sunset, and an umbrella tomorrow."),
+                    .init(role: "user", content: "How tall is Everest?"),
+                    .init(role: "assistant", content: "```card {\"type\":\"stat\",\"value\":\"8,849 m\",\"label\":\"Mount Everest\",\"note\":\"29,032 ft, surveyed 2020\"}```\n\n- Tallest above sea level\n- First summited in **1953**"),
                     .init(role: "user", content: "What's the difference between a process and a thread?"),
                     .init(role: "assistant", content: "A **process** has its own memory space; a **thread** runs inside a process and shares its memory.\n\n- Processes are isolated, so a crash stays contained.\n- Threads are cheaper to create and switch, but need locks for shared data.\n\nUse `fork()` for isolation, threads for parallel work on shared state."),
                 ]
+                if ProcessInfo.processInfo.environment["MURMUR_DEMO_WEATHER"] != nil { self.conversation = Array(self.conversation.prefix(2)) }
                 self.askVisible = true
             }),
             (14.0, { self.askVisible = false; self.phase = .error("Microphone access needed") }),
