@@ -441,7 +441,7 @@ final class AppModel {
     // MARK: Ask AI
 
     private func ask(_ question: String, seconds: Double) {
-        if !askVisible { conversation = []; weatherCards = [:]; financeCards = [:]; skillCards = [:]; financeIntent = nil; financeActive = false }
+        if !askVisible { conversation = []; weatherCards = [:]; financeCards = [:]; skillCards = [:]; financeIntent = nil; financeActive = false; Skills.followUp = nil }
         // Drop empty or failed turns so they don't pollute follow-up context.
         conversation.removeAll { $0.role == "assistant" && $0.content.isEmpty }
         conversation.append(.init(role: "user", content: question))

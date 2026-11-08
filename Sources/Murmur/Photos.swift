@@ -24,12 +24,43 @@ enum Photos {
 
     static func match(_ q: String) -> Skills.Job? {
         guard let intent = parse(q) else { return nil }
+        return claim(intent)
+    }
+
+    /// Runs the intent and lets the next turn be a short follow-up ("what about Ashmit?", "and from October?").
+    private static func claim(_ intent: Intent) -> Skills.Job {
+        let person: String? = switch intent { case .person(let n, _, _): n; case .date(_, let n, _): n; case .library: nil }
+        Skills.followUp = { followUp($0, person: person).map(claim) }
         return { await run(intent) }
+    }
+
+    private static let leadRx = rx(#"^\s*(?:(?:and|ok(?:ay)?|now|so|then)\s+)*(?:(?:what|how) about|same for|what of|how many (?:of|for))?\s*(?:(?:photos?|pictures?|pics?) (?:of|with|from|on)\s+|for\s+|of\s+|from\s+|on\s+)?(.*?)[\s?.!]*$"#)
+
+    private static let acks: Set<String> = ["thanks", "thank you", "cool", "nice", "great", "ok", "okay", "wow", "yes", "no", "yeah", "nope", "sure", "awesome", "perfect", "got it", "never mind"]
+
+    /// A short follow-up to the previous photo turn: a new person, or a new date for the same person.
+    static func followUp(_ q: String, person: String?, now: Date = Date()) -> Intent? {
+        guard q.split(separator: " ").count <= 7,
+              let m = leadRx.firstMatch(in: q, range: NSRange(q.startIndex..., in: q)),
+              let r = Range(m.range(at: 1), in: q) else { return nil }
+        let rest = String(q[r]).trimmingCharacters(in: .whitespaces)
+        let led = r.lowerBound != q.drop(while: \.isWhitespace).startIndex   // "what about …", "and …", "of …"
+        guard !rest.isEmpty, led || !acks.contains(rest.lowercased()) else { return nil }
+        if let span = parseSpan(rest.lowercased(), now: now) { return .date(span, person: person, loud: true) }
+        // A name: 1-3 words, capitalised as transcription writes names, or introduced by "what about"/"and".
+        let words = rest.split(separator: " ")
+        guard words.count <= 3, let first = words.first, !notNames.contains(first.lowercased()),
+              rest.range(of: #"^[A-Za-z][\w'’.-]*( [A-Za-z][\w'’.-]*){0,2}$"#, options: .regularExpression) != nil,
+              led || first.first?.isUppercase == true,
+              timeRx.firstMatch(in: rest.lowercased(), range: NSRange(rest.startIndex..., in: rest)) == nil,
+              !["it", "them", "him", "her", "that", "those", "weather", "you", "why", "how", "what"].contains(first.lowercased())
+        else { return nil }
+        return .person(rest, loud: true, fallback: nil)
     }
 
     private static func rx(_ p: String) -> NSRegularExpression { try! NSRegularExpression(pattern: p, options: [.caseInsensitive]) }
     private static let nounRx = rx(#"\b(photos?|pictures?|pics?|immich)\b"#)
-    private static let cueRx = rx(#"\b(i|i'm|i've|i'd|my|me|mine|we|our)\b"#)
+    private static let cueRx = rx(#"\b(i|i'm|i've|i'd|my|me|mine|we|our|you|your)\b"#)   // "do you have" means the user's library
     private static let didRx = rx(#"\b(what (did )?(i|we) (do|did|were doing|was doing)|where (was|were) (i|we))\b"#)
     private static let negRx = rx(#"\b(take|taking|snap)\s+(a\s+|some\s+|the\s+)?(photos?|pictures?|pics?)\b|\b(edit|editing|crop|resize|compress|print|store|storage|fit|hold|megapixels?|need|have to|software|apps?|tips?|tutorial|filters?)\b"#)
     private static let libRx = rx(#"how many (photos?|pictures?|pics?|videos?)\b.*\b(do i have|have i (taken|got)|did i take|in (my )?(library|immich)|in total|total|do i own)\b|how (big|large) is my (photo |picture |immich )?library|\b(photo|picture|immich) library\b"#)

@@ -20,11 +20,15 @@ enum Skills {
     typealias Job = () async -> SkillResult
     /// Tried in order; the first skill that recognises the question wins.
     static var matchers: [(String) -> Job?] = []
+    /// Set by the skill that answered the last turn, so a short follow-up ("what about Ashmit?") stays with it.
+    static var followUp: ((String) -> Job?)?
 
     static func match(_ question: String) -> Job? {
+        let previous = followUp
+        followUp = nil
         guard !Prefs.homelabHost.isEmpty else { return nil }
         for m in matchers { if let job = m(question) { return job } }
-        return nil
+        return previous?(question)
     }
 
     static func systemPrompt(_ r: SkillResult) -> String {

@@ -48,6 +48,16 @@ enum PhotosTest {
             ("how many photos can iphone store", "nil"), ("how many photos can I store on my iphone", "nil"),
             ("show me a picture of a cat", "nil"), ("how do I take a picture of the moon", "nil"),
             ("photos of the sunset", "nil"), ("photos of me", "nil"), ("I took three hours on my homework", "nil"),
+            ("How many photos of Ashmit do you have?", "person:Ashmit"), ("do you have pictures of alex", "person:alex"),
+            ("can you take a photo", "nil"), ("do you have a picture of a cat", "nil"), ("how many photos can you store", "nil"),
+        ]
+        // Follow-ups after a photo turn about "alex": (question, expected)
+        let follow: [(String, String)] = [
+            ("what about Ashmit?", "person:Ashmit"), ("and Ashmit", "person:Ashmit"), ("Ashmit?", "person:Ashmit"),
+            ("how about photos of Mom", "person:Mom"), ("what about october", "date:October 2026:alex"),
+            ("and from last friday?", "date:Nov 6, 2026:alex"), ("Thanks!", "nil"), ("cool", "nil"),
+            ("what about the weather", "nil"), ("why", "nil"), ("what's the capital of France", "nil"),
+            ("tell me a joke about cats please", "nil"), ("what about it", "nil"),
         ]
         func kind(_ i: Photos.Intent?) -> String {
             switch i {
@@ -87,6 +97,10 @@ enum PhotosTest {
             check(r.final && r.answer.contains("No one named John"), "unknown name + count question is a final note", r.answer)
             r = await Photos.run(Photos.parse("show me pictures of Paris", now: now)!)
             check(!r.final, "unknown name without count question falls through (final false)", r.answer)
+            for (q, want) in follow {
+                let got = kind(Photos.followUp(q, person: "alex", now: now))
+                check(got == want, "follow-up \"\(q)\" -> \(want)", got)
+            }
             r = await Photos.run(Photos.parse("photos of May from last friday", now: now)!)
             check(r.final && r.answer.hasPrefix("No photos of ") && r.answer.contains(" on Nov 6, 2026"), "person May + Nov 6 resolves person and date", r.answer)
             r = await Photos.run(Photos.parse("show me my photos from October", now: now)!)
