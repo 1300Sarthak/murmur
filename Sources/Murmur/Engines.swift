@@ -197,7 +197,7 @@ struct Ollama {
         return text
     }
 
-    func stream(model: String, messages: [Message], temperature: Double = 0.5) -> AsyncThrowingStream<String, Error> {
+    func stream(model: String, messages: [Message], temperature: Double = 0.5, contextTokens: Int? = nil) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -209,7 +209,8 @@ struct Ollama {
                         "model": model,
                         "stream": true,
                         "keep_alive": "30m",
-                        "options": ["temperature": temperature],
+                        // One fixed window for every call, so Ollama never reloads the model between cleanup and Ask.
+                        "options": ["temperature": temperature, "num_ctx": contextTokens ?? 16_384],
                         "messages": messages.map { ["role": $0.role, "content": $0.content] },
                     ]
                     req.httpBody = try JSONSerialization.data(withJSONObject: body)

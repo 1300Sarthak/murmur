@@ -56,7 +56,6 @@ final class Panels {
         guard let model, let pill, let askPanel else { return }
         let vf = screen.visibleFrame
         if ProcessInfo.processInfo.environment["MURMUR_DEBUG"] != nil {
-            NSLog("Murmur panels: phase=\(model.phase) ask=\(model.askVisible) pillVisible=\(pill.isVisible) frame=\(pill.frame) screen=\(vf)")
         }
 
         let showPill = model.phase != .idle && !(model.askVisible && model.phase == .thinking)

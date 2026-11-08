@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Drives Claude Code through cmux's socket CLI: no Apple Events or Accessibility needed.
@@ -84,7 +85,7 @@ enum Cmux {
         var t = text.replacingOccurrences(of: "\\s*\\n+\\s*", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "\\", with: " ")
             .trimmingCharacters(in: .whitespaces)
-        while let c = t.first, c == "!" || c == "-" { t.removeFirst(); t = t.trimmingCharacters(in: .whitespaces) }
+        while let c = t.first, c == "!" || c == "-" || c == "/" { t.removeFirst(); t = t.trimmingCharacters(in: .whitespaces) }
         return t
     }
 
@@ -112,5 +113,116 @@ enum Cmux {
         let workdir = FileManager.default.fileExists(atPath: expanded, isDirectory: &dir2) && dir2.boolValue ? expanded : NSHomeDirectory()
         return run(["new-workspace", "--name", "Voice: \(words)", "--cwd", workdir,
                     "--command", command, "--focus", focus ? "true" : "false"]).ok
+    }
+}
+
+/// Claude Code in iTerm2, Terminal or cmux. New sessions run a small launch script, so spoken text is never
+/// parsed by a shell; follow-ups go only to a tab whose foreground process is `claude`.
+@MainActor
+enum Terminals {
+    struct Target { let app: String; let tty: String; let cmux: (workspace: String, surface: String, tty: String)? }
+
+    static let bundleIDs = ["iterm": "com.googlecode.iterm2", "terminal": "com.apple.Terminal", "cmux": "com.cmuxterm.app"]
+
+    static func isTerminal(bundleID: String?) -> String? {
+        bundleIDs.first { $0.value == bundleID }?.key
+    }
+
+    /// A live Claude session in the terminal you're looking at, if any. Blocking work runs off the main thread.
+    static func focusedClaude(app: String) async -> Target? {
+        switch app {
+        case "cmux":
+            return await Task.detached { Cmux.focusedClaude().map { Target(app: "cmux", tty: $0.tty, cmux: $0) } }.value
+        case "iterm", "terminal":
+            let script = app == "iterm"
+                ? #"tell application "iTerm" to tell current session of current window to return tty"#
+                : #"tell application "Terminal" to return tty of selected tab of front window"#
+            guard let tty = runAppleScript(script)?.replacingOccurrences(of: "/dev/", with: ""), !tty.isEmpty else { return nil }
+            let isClaude = await Task.detached { Cmux.foregroundIsClaude(tty: tty) }.value
+            return isClaude ? Target(app: app, tty: tty, cmux: nil) : nil
+        default:
+            return nil
+        }
+    }
+
+    static func send(_ text: String, to target: Target) async -> Bool {
+        if let c = target.cmux { return await Task.detached { Cmux.send(text, to: c) }.value }
+        let line = Cmux.sanitize(text)
+        guard !line.isEmpty else { return false }
+        let escaped = line.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = target.app == "iterm"
+            ? "tell application \"iTerm\" to tell current session of current window to write text \"\(escaped)\""
+            : "tell application \"Terminal\" to do script \"\(escaped)\" in selected tab of front window"
+        return runAppleScript(script) != nil
+    }
+
+    static func newSession(prompt: String, account: String, cwd: String, flags: String, app: String) async -> Bool {
+        if app == "cmux" {
+            return await Task.detached { Cmux.newSession(prompt: prompt, account: account, cwd: cwd, flags: flags) }.value
+        }
+        guard let script = launchScript(prompt: prompt, account: account, cwd: cwd, flags: flags) else { return false }
+        if app == "iterm" {
+            let s = """
+            tell application "iTerm"
+                activate
+                create window with default profile command "\(script.path)"
+            end tell
+            """
+            return runAppleScript(s) != nil
+        }
+        // Terminal runs .command files when opened; this needs no Automation permission.
+        do {
+            _ = try await NSWorkspace.shared.open([script], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
+                                                  configuration: NSWorkspace.OpenConfiguration())
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Writes the prompt and an executable launcher: interactive zsh (so aliases/functions like `cca` exist),
+    /// cd, run claude with the prompt read from a file, then leave a shell open.
+    private static func launchScript(prompt: String, account: String, cwd: String, flags: String) -> URL? {
+        let dir = Prefs.supportDir.appendingPathComponent("prompts")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for old in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+            if let d = try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+               d < Date().addingTimeInterval(-86_400) { try? FileManager.default.removeItem(at: old) }
+        }
+        var prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let c = prompt.first, c == "-" || c == "!" { prompt.removeFirst() }
+        guard !prompt.isEmpty else { return nil }
+        let stamp = "\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(6))"
+        let promptFile = dir.appendingPathComponent("\(stamp).txt")
+        let scriptFile = dir.appendingPathComponent("\(stamp).command")
+        var isDir: ObjCBool = false
+        let expanded = (cwd as NSString).expandingTildeInPath
+        let workdir = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) && isDir.boolValue ? expanded : NSHomeDirectory()
+        let safeAccount = account.filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        let launcher = safeAccount.isEmpty ? "claude" : "cca \(safeAccount)"
+        let safeFlags = flags.filter { $0.isLetter || $0.isNumber || " -_=.:/".contains($0) }
+        let q: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let body = """
+        #!/bin/zsh -i
+        cd \(q(workdir))
+        \(launcher) \(safeFlags) "$(cat \(q(promptFile.path)))"
+        exec /bin/zsh -i
+        """
+        do {
+            try prompt.write(to: promptFile, atomically: true, encoding: .utf8)
+            try body.write(to: scriptFile, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptFile.path)
+        } catch { return nil }
+        return scriptFile
+    }
+
+    @discardableResult
+    static func runAppleScript(_ source: String) -> String? {
+        var error: NSDictionary?
+        guard let result = NSAppleScript(source: source)?.executeAndReturnError(&error), error == nil else {
+            NSLog("Murmur AppleScript error: \(error ?? [:])")
+            return nil
+        }
+        return result.stringValue ?? ""
     }
 }
