@@ -81,6 +81,7 @@ final class AppModel {
         if let i = CommandLine.arguments.firstIndex(of: "--phototest"), i + 1 < CommandLine.arguments.count {
             return PhotosTest.run(fixtures: CommandLine.arguments[i + 1])
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--cardtest") { return CardTest.run(pngDir: CommandLine.arguments[safe: i + 1]) }
         if let i = CommandLine.arguments.firstIndex(of: "--hosttest"), i + 1 < CommandLine.arguments.count { return HostTest.run(fixtures: CommandLine.arguments[i + 1], pngDir: CommandLine.arguments[safe: i + 2]) }
         if let i = CommandLine.arguments.firstIndex(of: "--agenttest"), i + 1 < CommandLine.arguments.count {
             // Opens a background (unfocused) Claude Code workspace with the given prompt, exactly as agent mode would.
@@ -582,10 +583,8 @@ final class AppModel {
         }
         s += """
 
-        Formatting: plain Markdown renders nicely (lists, **bold**, tables, code). Optionally, when it replaces prose, you may \
-        emit ONE card as a fenced block: ```card {"type":"stat","value":"...","label":"...","note":"..."}``` for a single key \
-        number/answer, or ```card {"type":"facts","title":"...","items":[["Key","Value"]]}``` for 3-8 key facts. Otherwise plain text.
-        """
+        Formatting: plain Markdown renders nicely (lists, **bold**, tables, code).
+        """ + (Weather.isWeatherQuestion(question) ? "" : "\n" + CardSpec.prompt)
         if let ctx = Prefs.personalContext {
             s += "\n\nBackground about the user, for personalizing answers. Use it when relevant; don't recite it.\n<user_context>\n\(ctx)\n</user_context>"
         }

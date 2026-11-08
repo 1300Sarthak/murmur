@@ -7,10 +7,12 @@ enum Block: Hashable {
     case paragraph(String), heading(String), bullet(String), numbered(Int, String)
     case table([[String]]), code(String), stat(value: String, label: String, note: String)
     case facts(title: String, items: [[String]])
+    /// Any other card type (flights, route, list, ...): the raw JSON, drawn by `ModelCard`.
+    case card(String)
 
     static func parse(_ text: String, streaming: Bool) -> [Block] {
         var blocks: [Block] = []
-        var lines = text.components(separatedBy: "\n")[...]
+        var lines = normalized(text).components(separatedBy: "\n")[...]
         var para: [String] = []
         func flush() { if !para.isEmpty { blocks.append(.paragraph(para.joined(separator: " "))); para = [] } }
 
@@ -26,7 +28,7 @@ enum Block: Hashable {
                         body += "\n" + next.trimmingCharacters(in: .whitespaces).dropLast(3); closed = true
                     } else { body += "\n" + next }
                 }
-                let isCard = body.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("card")
+                let isCard = body.trimmingCharacters(in: .whitespacesAndNewlines).range(of: #"^card(\s|\{|$)"#, options: .regularExpression) != nil
                 if isCard {
                     // Half-streamed cards stay hidden until complete.
                     if closed, let card = card(from: String(body.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(4))) { blocks.append(card) }
@@ -60,15 +62,47 @@ enum Block: Hashable {
         return blocks
     }
 
+    /// Puts a card that follows text on the same line onto its own line, and drops a lead-in progress sentence before it
+    /// ("I'll check the latest score.") that some providers print while searching.
+    static func normalized(_ text: String) -> String {
+        var out: [String] = [], inFence = false
+        for line in text.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            // Only outside code fences, and only a real card ("```card {"), so code and prose mentioning cards stay intact.
+            if !inFence, !t.hasPrefix("```"), let r = line.range(of: #"```card\s*\{"#, options: .regularExpression) {
+                let before = line[..<r.lowerBound].trimmingCharacters(in: .whitespaces)
+                if !before.isEmpty && !isProgress(before) { out.append(before) }
+                out.append(String(line[r.lowerBound...]))
+                if !String(line[r.upperBound...]).contains("```") { inFence = true }
+                continue
+            }
+            if t.hasPrefix("```") {
+                let opensAndCloses = t.count > 3 && t.dropFirst(3).contains("```")
+                if !opensAndCloses { inFence.toggle() }
+            }
+            out.append(line)
+        }
+        // A progress line directly above a card ("I'll check the latest score.") is noise once the card is there.
+        if out.count >= 2, isProgress(out[0]), out[1].trimmingCharacters(in: .whitespaces).hasPrefix("```card") { out.removeFirst() }
+        return out.joined(separator: "\n")
+    }
+
+    /// "I'll check …", "Let me look up …": what a searching provider prints before its answer.
+    static func isProgress(_ s: String) -> Bool {
+        s.range(of: #"^(I'll|I’ll|I will|Let me|I'm going to|I’m going to) (check|search|look|find|pull|grab|get|see|use|fetch)\b[^`]{0,140}[.:…]?$"#,
+                options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
     private static func card(from json: String) -> Block? {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return nil }
         switch obj["type"] as? String {
         case "stat":
             return .stat(value: obj["value"].map { "\($0)" } ?? "", label: obj["label"] as? String ?? "", note: obj["note"] as? String ?? "")
         case "facts":
-            let items = (obj["items"] as? [[Any]] ?? []).map { $0.map { "\($0)" } }
+            guard let rows = obj["items"] as? [[Any]] else { return ModelCard(json: json) == nil ? nil : .card(json) }
+            let items = rows.map { $0.map { "\($0)" } }
             return items.isEmpty ? nil : .facts(title: obj["title"] as? String ?? "", items: items)
-        default: return nil
+        default: return ModelCard(json: json) == nil ? nil : .card(json)
         }
     }
 }
@@ -136,6 +170,8 @@ struct RichAnswer: View {
             }
             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(Palette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        case .card(let json):
+            if let c = ModelCard(json: json) { c }
         case .facts(let title, let items):
             VStack(alignment: .leading, spacing: 9) {
                 if !title.isEmpty { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white) }
